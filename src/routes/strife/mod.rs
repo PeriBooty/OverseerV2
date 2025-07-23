@@ -1,13 +1,21 @@
 pub mod leader;
 pub mod abscond;
+pub mod select;
+mod resolve;
 
 pub use leader::*;
 pub use abscond::*;
+pub use select::*;
 
 use std::collections::HashMap;
+use std::fmt::Formatter;
 use askama::Template;
 use axum::Extension;
 use axum::response::IntoResponse;
+use itertools::Itertools;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::de::{MapAccess, Unexpected, Visitor};
+use serde::ser::SerializeMap;
 use sqlx::MySqlPool;
 use crate::error::{Error, Result};
 use crate::routes::character::{Character, Strifer};
@@ -72,7 +80,8 @@ pub async fn strife_display(character: Character, Extension(db): Extension<MySql
             let mut minus_2_row: Option<&Character> = None;
             let mut minus_1_row: Option<&Character> = None;
 
-            while let Some(server_id) = current_chum.server_id && server_id != character.id && no_break {
+            while current_chum.server_id.is_some_and(|s| s != character.id) && no_break {
+                let server_id = current_chum.server_id.unwrap();
                 let minus_3_row = minus_2_row;
                 minus_2_row = minus_1_row;
                 minus_1_row = Some(&current_chum);
@@ -80,8 +89,8 @@ pub async fn strife_display(character: Character, Extension(db): Extension<MySql
                 current_chum = mates.get(&server_id).ok_or(Error::CharacterNotFound(server_id))?;
                 no_break =
                     current_chum.gates_cleared >= 6 && minus_3_row.is_some_and(|c| c.gates_cleared >= 6)
-                 || current_chum.gates_cleared >= 4 && minus_2_row.is_some_and(|r| r.gates_cleared >= 4)
-                 || current_chum.gates_cleared >= 2 && minus_1_row.is_some_and(|c| c.gates_cleared >= 2);
+                        || current_chum.gates_cleared >= 4 && minus_2_row.is_some_and(|r| r.gates_cleared >= 4)
+                        || current_chum.gates_cleared >= 2 && minus_1_row.is_some_and(|c| c.gates_cleared >= 2);
 
                 if no_break {
                     if let Some(c) = chain.get_mut(&current_chum.id) {
@@ -127,10 +136,13 @@ pub async fn strife_display(character: Character, Extension(db): Extension<MySql
     };
 
     let strife_commands = StrifeCommandsTemplate {
-        character: character.clone(),
         main_strifer: main_strifer.clone(),
-        strifers: strifers.clone(),
         potential_leaders,
+        actions: StrifeActionsTemplate {
+            character: character.clone(),
+            main_strifer: main_strifer.clone(),
+            strifers: strifers.clone(),
+        }
     };
 
     let strifers = StrifersTemplate {
@@ -182,4 +194,101 @@ pub struct StrifeFraymotifTemplate {
 pub struct StrifersTemplate {
     pub strifers: Vec<Strifer>,
     pub player_side: i8
+}
+
+#[derive(Template)]
+#[template(path = "partial/strife-actions.html.jinja")]
+pub struct StrifeActionsTemplate {
+    pub character: Character,
+    pub main_strifer: Strifer,
+    pub strifers: Vec<Strifer>,
+}
+
+#[derive(Clone)]
+pub struct Action {
+    pub active: String,
+    pub passive: String,
+}
+
+#[derive(Clone)]
+pub struct ActionSubmission {
+    pub actions: HashMap<i64, Action>
+}
+
+impl Serialize for ActionSubmission {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer
+    {
+        let mut map = serializer.serialize_map(Some(self.actions.len()))?;
+        for (k, v) in &self.actions {
+            map.serialize_entry(format!("{}active", k).as_str(), &v.active)?;
+            map.serialize_entry(format!("{}passive", k).as_str(), &v.passive)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ActionSubmission {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>
+    {
+        deserializer.deserialize_map(ActionSubmissionVisitor)
+    }
+}
+
+struct ActionSubmissionVisitor;
+
+impl<'de> Visitor<'de> for ActionSubmissionVisitor {
+    type Value = ActionSubmission;
+
+    fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+        formatter.write_str("a map of actions formatted as { \"<strifer_id>active\": \"string\", \"<strifer_id>passive\": \"string\", ... }")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        struct PartialAction {
+            active: Option<String>,
+            passive: Option<String>,
+        }
+
+        let mut partial_actions = HashMap::new();
+
+        while let Some((key, value)) = map.next_entry::<String, String>()? {
+            if !key.contains(':') {
+                continue; // We PROBABLY don't care about this field.
+            }
+
+            let [strifer_id, action_type] = key.split(':').collect_array::<2>()
+                .ok_or(serde::de::Error::unknown_field(key.as_str(), &["<strifer_id>:active", "<strifer_id>:passive"]))?;
+
+            let strifer_id = strifer_id.parse::<i64>().map_err(|_err|
+                serde::de::Error::invalid_value(Unexpected::Str(strifer_id), &self))?;
+
+            let action = partial_actions.entry(strifer_id)
+                .or_insert(PartialAction { passive: None, active: None });
+
+            match action_type {
+                "active" => action.active = Some(value),
+                "passive" => action.passive = Some(value),
+                _ => return Err(serde::de::Error::unknown_field(key.as_str(), &["<strifer_id>:active", "<strifer_id>:passive"]))
+            };
+        }
+
+        let mut actions = HashMap::new();
+        for (strifer_id, action) in partial_actions {
+            actions.insert(strifer_id, match (action.active, action.passive) {
+                (Some(active), Some(passive)) => Action { active, passive },
+                (Some(_), None) => return Err(serde::de::Error::missing_field("<strife_id>:passive")),
+                (None, Some(_)) => return Err(serde::de::Error::missing_field("<strifer_id>:active")),
+                (None, None) => unreachable!(), // Should never reach here
+            });
+        }
+
+        Ok(ActionSubmission { actions })
+    }
 }

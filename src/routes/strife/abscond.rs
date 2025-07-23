@@ -8,7 +8,7 @@ use crate::broadcast::BroadcastMessage;
 use crate::routes::character::{Character, Strifer};
 use crate::routes::HtmlTemplate;
 use crate::error::Result;
-use crate::routes::strife::{StrifeCommandsTemplate, StrifersTemplate};
+use crate::routes::strife::{StrifeActionsTemplate, StrifeCommandsTemplate, StrifersTemplate};
 
 pub async fn strife_abscond(
     mut character: Character,
@@ -58,11 +58,15 @@ pub async fn strife_abscond(
                     strifers_string
                 })?;
 
+                let strifer_owner = strifer.fetch_owner(&db).await?.unwrap().clone();
                 let leader_commands = StrifeCommandsTemplate {
-                    character: strifer.fetch_owner(&db).await?.unwrap().clone(),
                     main_strifer: strifer.clone(),
-                    strifers,
                     potential_leaders,
+                    actions: StrifeActionsTemplate {
+                        character: strifer_owner,
+                        main_strifer: strifer.clone(),
+                        strifers
+                    }
                 }.render().unwrap_or_else(|_err| "[ERROR GENERATING STRIFE COMMAND LIST]".to_string());
 
                 sse.send(BroadcastMessage::LeaderAdd {

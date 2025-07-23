@@ -1,0 +1,42 @@
+{% let action_page %}
+{% if main_strifer.is_leader %}
+    {% let action_page = "/strife/resolve" %}
+    Enter commands for strifers under your control to proceed:
+{% else %}
+    {% let action_page = "/strife/select" %}
+    You may select commands for strifers under your control:
+{% endif %}
+
+<form hx-post="{{ action_page }}" hx-swap="innerHTML" hx-target="#action-result">
+    {% for strifer in strifers %}
+        {% if strifer.side == main_strifer.side && strifer.is_controllable && strifer.owner_id.is_some() && strifer.owner_id.unwrap() == character.id %}
+            {{ strifer.name }}:<br />
+
+            <select name="{{ strifer.id }}:active">
+                {% for bonus in strifer.active_bonus() %}
+                    <option value="{{ bonus.key }}" {% if strifer.last_active == bonus.key %}selected{% endif %}>{{ bonus.key }} ({{ bonus.value }})</option>
+                {% endfor %}
+            </select><br />
+
+            <select name="{{ strifer.id }}:passive">
+                {% for bonus in strifer.passive_bonus() %}
+                    <option value="{{ bonus.key }}" {% if strifer.last_passive == bonus.key %}selected{% endif %}>{{ bonus.key }} ({{ bonus.value }})</option>
+                {% endfor %}
+            </select><br />
+        {% endif %}
+    {% endfor %}<br />
+    {% if main_strifer.is_leader %}
+        <input type="submit" id="advance" value="Advance!" />
+    {% else %}
+        <input type="submit" value="Decide!" />
+    {% endif %}
+</form><br />
+
+Party Members:<br />
+{% for strifer in strifers %}
+    {% if strifer.side == main_strifer.side && strifer.owner_id.is_some() && strifer.owner_id.unwrap() != character.id %}
+        {{ strifer.name }}:<br />
+        Selected actions: <span hx-ext="sse" sse-connect="/sse" sse-swap="strife-action-update-{{ strifer.id }}">{{ strifer.last_active }}/{{ strifer.last_passive }}</span><br />
+    {% endif %}
+{% endfor %}
+<br />

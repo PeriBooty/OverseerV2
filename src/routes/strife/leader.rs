@@ -8,6 +8,7 @@ use crate::broadcast::BroadcastMessage;
 use crate::routes::character::{Character, Strifer};
 use crate::error::{Result};
 use crate::routes::HtmlTemplate;
+use crate::routes::strife::StrifeActionsTemplate;
 
 pub async fn swap_leader(
     mut character: Character,
@@ -61,16 +62,23 @@ pub async fn swap_leader(
         .collect();
 
     let leader_removed_template = StrifeCommandsTemplate {
-        character: character.clone(),
         main_strifer: character.strife.clone(),
-        strifers: strifers.clone(),
         potential_leaders: Vec::new(),
+        actions: StrifeActionsTemplate {
+            character: character.clone(),
+            main_strifer: character.strife.clone(),
+            strifers: strifers.clone(),
+        }
     };
+    let new_leader_character = new_leader.fetch_owner(&db).await?.unwrap().clone();
     let leader_added_template = StrifeCommandsTemplate {
-        character: new_leader.fetch_owner(&db).await?.unwrap().clone(),
-        main_strifer: new_leader,
-        strifers,
-        potential_leaders
+        main_strifer: new_leader.clone(),
+        potential_leaders,
+        actions: StrifeActionsTemplate {
+            character: new_leader_character.clone(),
+            main_strifer: new_leader,
+            strifers,
+        }
     };
 
     let leader_removed_strife_commands = leader_removed_template.render().unwrap_or_else(|_err| "[ERROR GENERATING STRIFE COMMAND LIST]".to_string());
@@ -102,8 +110,7 @@ pub struct LeaderSwapTemplate {
 #[derive(Template)]
 #[template(path = "partial/strife-commands.html.jinja")]
 pub struct StrifeCommandsTemplate {
-    pub character: Character,
     pub main_strifer: Strifer,
-    pub strifers: Vec<Strifer>,
     pub potential_leaders: Vec<Strifer>,
+    pub actions: StrifeActionsTemplate
 }

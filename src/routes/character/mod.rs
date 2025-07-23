@@ -18,6 +18,8 @@ pub mod dreamer;
 pub mod gates;
 pub mod symbol;
 
+type CharacterStat = (String, i64);
+
 #[derive(Debug, Clone)]
 pub struct Character {
     pub id: i64,
@@ -50,6 +52,7 @@ pub struct Character {
     pub dungeon_col: i64,
     pub old_dungeon_row: i64,
     pub old_dungeon_col: i64,
+    pub stats: Vec<CharacterStat>,
 }
 
 impl Character {
@@ -65,7 +68,7 @@ impl Character {
 
     pub async fn load(id: i64, db: &MySqlPool) -> Result<Option<Character>> {
         let sql = some_or_return_ok!(sqlx::query!(
-            r#"SELECT id, name, aspect, class, wakeself, dreamself, dreamingstatus, echeladder, boondollars, symbol, colour, dreamer, land1, land2, grist_type, consort, house_build, achievements, gatescleared, session, server, oldenemydata as old_enemy_data, down, dreamdown as dreamer_down, dungeon, inmedium as in_medium, denizendown as denizen_down, dungeonrow as dungeon_row, dungeoncol as dungeon_col, olddungeonrow as old_dungeon_row, olddungeoncol as old_dungeon_col FROM Characters WHERE id = ?"#,
+            r#"SELECT id, name, aspect, class, wakeself, dreamself, dreamingstatus, echeladder, boondollars, symbol, colour, dreamer, land1, land2, grist_type, consort, house_build, achievements, gatescleared, session, server, oldenemydata as old_enemy_data, down, dreamdown as dreamer_down, dungeon, inmedium as in_medium, denizendown as denizen_down, dungeonrow as dungeon_row, dungeoncol as dungeon_col, olddungeonrow as old_dungeon_row, olddungeoncol as old_dungeon_col, stats FROM Characters WHERE id = ?"#,
             id
         )
         .fetch_optional(db)
@@ -141,6 +144,16 @@ impl Character {
             dungeon_col: sql.dungeon_col as i64,
             old_dungeon_row: sql.old_dungeon_row as i64,
             old_dungeon_col: sql.old_dungeon_col as i64,
+            stats: {
+                let mut stats: Vec<CharacterStat> = Vec::new();
+                for stat in sql.stats.split("|") {
+                    let [name, value] = stat.split(":").collect_array::<2>()
+                        .ok_or(Error::TupleParse("Failed to parse Character Stats".to_string()))?;
+
+                    stats.push((name.to_string(), value.parse()?));
+                }
+                stats
+            }
         }))
     }
 
@@ -161,6 +174,30 @@ impl Character {
             .into_iter()
             .filter(|g| self.house_build > *g)
             .count()
+    }
+
+    pub fn stat(&self, stat: &str) -> Option<i64> {
+        self.stats.iter()
+            .find(|s| s.0 == stat)
+            .map(|s| s.1)
+    }
+
+    pub fn set_stat(&mut self, stat: &str, value: i64) {
+        match self.stats.iter_mut().find(|s| s.0 == stat) {
+            Some(s) => {
+                s.1 = value;
+            }
+            None => {
+                self.stats.push((stat.to_owned(), value));
+            }
+        }
+    }
+
+    pub fn set_stat_max(&mut self, stat: &str, value: i64) {
+        let top = self.stat(stat);
+        if top.is_none_or(|t| t < value) {
+            self.set_stat(stat, value);
+        }
     }
 }
 
@@ -209,6 +246,7 @@ pub struct Power {
 pub struct Strifer {
     pub id: i64,
     pub power: i64,
+    pub max_power: i64,
     pub health: i64,
     pub max_health: i64,
     pub energy: i64,
@@ -227,7 +265,10 @@ pub struct Strifer {
     pub abilities: Vec<String>,
     pub statuses: Vec<StrifeStatus>, // In the format of [a1[:a2...]|...], e.g. a1:a2|b1:b2|c1:c2
     pub fatigue: i64,
+    pub damage_dealt: i64,
     pub damage_taken: i64,
+    pub attacks: i64,
+    pub time_attack: bool,
     pub active: Option<String>,
     pub passive: Option<String>,
     pub is_leader: bool,
@@ -236,6 +277,16 @@ pub struct Strifer {
     pub last_active: String,
     pub last_passive: String,
     pub aspect: Option<String>,
+    pub luck: i64,
+    pub brief_luck: i64,
+    pub teamwork: i64,
+    pub effects: Vec<String>, // TODO: Map to a concrete type
+    pub resistances: HashMap<String, i64>, // TODO: Map to a concrete type
+    pub skipped: bool,
+    pub used_bonus_action: bool,
+    pub next_offense: i64,
+    pub next_defense: i64,
+    pub next_used_bonus_action: bool,
 }
 
 impl Strifer {
@@ -250,35 +301,52 @@ impl Strifer {
 
     pub async fn load(id: i64, db: &MySqlPool) -> Result<Option<Strifer>> {
         let sql = some_or_return_ok!(sqlx::query!(
-            r#" SELECT
+            "SELECT
                     ID as id,
+                    name,
+                    owner as owner_id,
+                    strifeID as strife_id,
+                    side,
+                    leader,
+                    teamwork,
+                    control,
+                    grist,
+                    land,
+                    description,
+                    echeladder,
+                    aspect,
+                    fatigue,
                     power,
+                    maxpower as max_power,
                     health,
                     maxhealth as max_health,
                     energy,
                     maxenergy as max_energy,
-                    description,
-                    echeladder,
-                    owner as owner_id,
-                    strifeID as strife_id,
-                    side,
+                    luck,
+                    brief_luck,
+                    subaction as used_bonus_action,
                     currentmotif as current_motif,
                     currentmotifname as current_motif_name,
-                    name,
-                    bonuses,
-                    equipbonuses as equipment_bonuses,
-                    grist,
-                    abilities,
-                    status,
-                    fatigue,
-                    leader,
-                    control,
+                    motifsused as motifs_used,
+                    teammotif as team_motif,
                     lastactive as last_active,
                     lastpassive as last_passive,
-                    aspect
+                    autopilot,
+                    autoassist,
+                    noassist,
+                    cantabscond as cant_abscond,
+                    ondeath as on_death,
+                    status,
+                    equipstatus as equip_status,
+                    bonuses,
+                    equipbonuses as equipment_bonuses,
+                    resistances,
+                    abilities,
+                    effects,
+                    persist
                 FROM Strifers
                 WHERE id = ?
-                "#,
+                ",
             id
         )
         .fetch_optional(db)
@@ -290,6 +358,7 @@ impl Strifer {
         Ok(Some(Strifer {
             id: sql.id,
             power: sql.power as i64,
+            max_power: sql.max_power as i64,
             health: sql.health as i64,
             max_health: sql.max_health as i64,
             energy: sql.energy as i64,
@@ -323,7 +392,10 @@ impl Strifer {
                 .filter_map(|s| s.ok())
                 .collect(),
             fatigue: sql.fatigue as i64,
+            damage_dealt: 0,
             damage_taken: 0,
+            attacks: 0,
+            time_attack: false,
             active: None,
             passive: None,
             abilities: sql.abilities.split("|").filter(|s| !s.is_empty()).map(str::to_string).collect(),
@@ -331,7 +403,21 @@ impl Strifer {
             is_controllable: sql.control == 1,
             last_active: sql.last_active,
             last_passive: sql.last_passive,
-            aspect: if sql.aspect.is_empty() { None } else { Some(sql.aspect) }
+            aspect: if sql.aspect.is_empty() { None } else { Some(sql.aspect) },
+            luck: sql.luck as i64,
+            brief_luck: sql.brief_luck as i64,
+            teamwork: sql.teamwork as i64,
+            effects: Vec::new(),
+            resistances: sql.resistances
+                .split('|')
+                .map(|s| s.split(':').collect_array::<2>().unwrap())
+                .map(|[key, value]| (key.to_string(), value.parse::<i64>().unwrap())) // TODO: Handle errors
+                .collect(),
+            skipped: false,
+            used_bonus_action: sql.used_bonus_action == 1,
+            next_offense: 0,
+            next_defense: 0,
+            next_used_bonus_action: false
         }))
     }
 
@@ -578,6 +664,11 @@ impl Strifer {
             None => None,
             Some(c) => c.as_ref().map(|c| c.as_ref())
         }
+    }
+
+    pub fn resistance_to(&self, resistance_type: &str) -> i64 {
+        self.resistances.get(resistance_type)
+            .cloned().unwrap_or(0)
     }
 
     pub async fn fetch_owner(&self, db: &MySqlPool) -> Result<Option<&Character>> {

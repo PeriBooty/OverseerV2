@@ -27,3 +27,4 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 include-lines = "1.1.2"
 rand = "0.9.1"
+strum = { version = "0.27.1", features = ["derive"] }
